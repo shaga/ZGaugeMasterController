@@ -11,6 +11,7 @@ public:
 
     void setSpeed(int8_t speed, bool is_push = false);
     void drawRail(bool is_left, bool is_evacute, bool is_push = false);
+    void drawDamp(uint8_t damp);
 
 private:
     static const float SPEED_START_DEG;
@@ -22,6 +23,8 @@ private:
     M5GFX display_;
     M5Canvas canvas_speed_;
     M5Canvas canvas_rail_;
+    M5Canvas canvas_damp_;
+    int8_t before_speed_;
 };
 
 #endif //DISPLAY_H_

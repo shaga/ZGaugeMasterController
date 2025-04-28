@@ -19,7 +19,7 @@ HIDUniversal hid(&usb);
 MasterControllerEvents masconEvents;
 MasterController masscon(&masconEvents);
 
-static const uint8_t SPEED_LIMIT = 90;
+static const uint8_t SPEED_LIMIT = 85;
 
 typedef struct {
   uint8_t accel;
@@ -56,7 +56,7 @@ static uint8_t maxSpeed = SPEED_LIMIT;
 static bool is_left = false;
 static bool is_evacute = false;
 
-Display display;
+Display display(SPEED_LIMIT);
 // M5GFX display;
 
 static void onChangedHandle(HandleState_t handle)
@@ -124,6 +124,10 @@ static void onChangedHandle(HandleState_t handle)
 
 static void onChangedHat(HatState_t hat)
 {
+  if (train_controller.is_running()) {
+    return;
+  }
+
   if (hat == UpLeft || hat == Left || hat == DownLeft)
   {
     is_left = true;
@@ -165,6 +169,8 @@ static void onChangedAdditionalButton(AdditionalButton_t additional_button)
   {
     decelSize = 0;
   }
+
+  display.drawDamp(decelSize);
 }
 
 static void taskSpeedControlProc(void *param)
@@ -257,6 +263,7 @@ void setup()
 
   display.begin();
   display.drawRail(is_left, is_evacute, true);
+  display.drawDamp(0);
 
   initMasconn();
 
