@@ -21,23 +21,60 @@ MasterController masscon(&masconEvents);
 
 static const uint8_t SPEED_LIMIT = 85;
 
+// 力行段階の定義
 typedef struct {
-  uint8_t accel;
-  uint8_t max;
-  uint8_t tick;
-  uint8_t padding[1];
-} SpeedInfo_t;
+    uint8_t max_speed;   // 最大速度 (PWM値)
+    uint8_t base_accel;  // 基本加速度 (PWM値)
+    uint8_t period;      // 加速周期 (ティック数)
+} PowerNotchInfo_t;
 
-static const SpeedInfo_t SPEED_INFO[6] = {
-  {0, SPEED_LIMIT, 255},
-  {1, 30, 3},
-  {2, 45, 2} ,
-  {3, 60, 1},
-  {4, 75, 1},
-  {6, SPEED_LIMIT, 1},
+static const PowerNotchInfo_t POWER_NOTCH[5] = {  // ノッチ1-5
+    {20, 4, 5},          // ノッチ1: 最大速度25, 基本加速度3, 3ティックに1回加速
+    {45, 4, 3},          // ノッチ2: 最大速度45, 基本加速度6, 2ティックに1回加速
+    {65, 4, 2},          // ノッチ3: 最大速度60, 基本加速度5, 毎ティック加速
+    {75, 5, 1},          // ノッチ4: 最大速度75, 基本加速度7, 毎ティック加速
+    {85, 8, 1}          // ノッチ5: 最大速度85, 基本加速度10, 毎ティック加速
 };
 
-static const TickType_t TICK_PERIOD_DECEL = (100 / portTICK_RATE_MS);
+// ブレーキ段階の定義
+typedef struct {
+    uint8_t period;      // 減速周期 (ティック数)
+    uint8_t decel;       // 減速度 (PWM値/ティック)
+} BrakeNotchInfo_t;
+
+static const BrakeNotchInfo_t BRAKE_NOTCH[9] = {  // ブレーキ1-8 + 非常
+    {4, 1},               // ブレーキ1: 3ティックに1回減速, 減速度1
+    {3, 1},               // ブレーキ2: 2ティックに1回減速, 減速度1
+    {2, 1},               // ブレーキ3: 毎ティック減速, 減速度1
+    {1, 1},               // ブレーキ4: 毎ティック減速, 減速度3
+    {1, 2},               // ブレーキ5: 毎ティック減速, 減速度6
+    {1, 5},               // ブレーキ6: 毎ティック減速, 減速度10
+    {1, 9},               // ブレーキ7: 毎ティック減速, 減速度15
+    {1, 15},              // ブレーキ8: 毎ティック減速, 減速度20
+    {1, 30}               // 非常ブレーキ: 毎ティック減速, 減速度50
+};
+
+// 環境抵抗の定義
+typedef struct {
+    uint8_t decel;        // 減速量 (PWM値/ティック)
+    uint8_t period;       // 減速周期 (ティック数)
+} EnvironmentResistance_t;
+
+static const EnvironmentResistance_t ENV_RESISTANCE[11] = {
+    {0, 0},               // レベル0: 抵抗なし
+    {1, 30},              // レベル1: 10ティックに1回減速1
+    {1, 25},              // レベル2: 9ティックに1回減速1
+    {1, 20},              // レベル3: 8ティックに1回減速1
+    {1, 16},              // レベル4: 7ティックに1回減速1
+    {1, 13},              // レベル5: 6ティックに1回減速1
+    {1, 10},              // レベル6: 5ティックに1回減速1
+    {1, 8},               // レベル7: 4ティックに1回減速1
+    {1, 6},               // レベル8: 3ティックに1回減速1
+    {1, 4},               // レベル9: 2ティックに1回減速1
+    {1, 2}                // レベル10: 毎ティック減速1
+};
+
+static const TickType_t TICK_PERIOD_UPDATE_SPEED = (50 / portTICK_RATE_MS);
 static const TickType_t TICK_PERIOD_TO_SEND_QUEUE = (10 / portTICK_RATE_MS);
 static const TickType_t TICK_PERIOD_TO_RECV_QUEUE = (10 / portTICK_RATE_MS);
 
@@ -48,10 +85,9 @@ TaskHandle_t taskSpeedControl;
 QueueHandle_t queueSpeedControl;
 SemaphoreHandle_t semaphoreDecel;
 
-static uint8_t accel = 0;
-static uint8_t brakeSize = 0;
 static uint8_t decelSize = 0;
 static uint8_t maxSpeed = SPEED_LIMIT;
+static HandleState_t handle_state = Center;  // ハンドル状態の追加
 
 static bool is_left = false;
 static bool is_evacute = false;
@@ -61,65 +97,7 @@ Display display(SPEED_LIMIT);
 
 static void onChangedHandle(HandleState_t handle)
 {
-  switch (handle)
-  {
-  case EmergencyBrake:
-    display.setSpeed(0);
-    train_controller.setSpeed(0);
-    break;
-  case Center:
-    accel = 0;
-    brakeSize = 0;
-    break;
-  case Power1:
-    accel = 1;
-    break;
-  case Power2:
-    accel = 2;
-    break;
-  case Power3:
-    accel = 3;
-    break;
-  case Power4:
-    accel = 4;
-    break;
-  case Power5:
-    accel = 5;
-    break;
-  case Brake1:
-    brakeSize = 1;
-    break;
-  case Brake2:
-    brakeSize = 2;
-    break;
-  case Brake3:
-    brakeSize = 3;
-    break;
-  case Brake4:
-    brakeSize = 4;
-    break;
-  case Brake5:
-    brakeSize = 6;
-    break;
-  case Brake6:
-    brakeSize = 8;
-    break;
-  case Brake7:
-    brakeSize = 10;
-    break;
-  case Brake8:
-    brakeSize = 15;
-    break;
-  }
-
-  if (handle < Center)
-  {
-    accel = 0;
-  }
-  else if (handle > Center)
-  {
-    brakeSize = 0;
-  }
+  handle_state = handle;  // ハンドル状態の更新
 }
 
 static void onChangedHat(HatState_t hat)
@@ -155,7 +133,7 @@ static void onChangedHat(HatState_t hat)
 
 static void onChangedAdditionalButton(AdditionalButton_t additional_button)
 {
-  if (IS_BUTTON_DOWN(additional_button, Plus) && decelSize < 20)
+  if (IS_BUTTON_DOWN(additional_button, Plus) && decelSize < 10)
   {
     decelSize++;
   }
@@ -176,55 +154,81 @@ static void onChangedAdditionalButton(AdditionalButton_t additional_button)
 static void taskSpeedControlProc(void *param)
 {
   uint32_t value;
-  static int decelCount = 0;
-  static int accelCount = 0;
-  Serial.println("start task....");
-  while (true)
-  {
+  static int8_t current_speed = 0;  // 現在の速度
+  static uint8_t tick_count = 0;    // ティックカウンタ（環境抵抗用）
+
+  while (true) {
     while (xQueueReceive(queueSpeedControl, &value, TICK_PERIOD_TO_RECV_QUEUE) != pdTRUE);
 
-    decelCount++;
-    accelCount++;
+    // 非常ブレーキの処理
+    if (handle_state == EmergencyBrake) {
+      BrakeNotchInfo_t current = BRAKE_NOTCH[8];  // 非常ブレーキは配列の最後
+      current_speed -= current.decel;  // 毎ティック最大減速度で減速
+      if (current_speed < 0) current_speed = 0;
+      display.setSpeed(current_speed, true);
+      train_controller.setSpeed(current_speed);
+      continue;
+    }
 
-    int8_t base_speed = train_controller.current_speed() > SPEED_LIMIT ? SPEED_LIMIT : train_controller.current_speed();
+    // 力行制御
+    if (handle_state > Center) {
+      int index = 0;
+      if (handle_state == Power1) index = 0;
+      else if (handle_state == Power2) index = 1;
+      else if (handle_state == Power3) index = 2;
+      else if (handle_state == Power4) index = 3;
+      else if (handle_state == Power5) index = 4;
+      else continue;
 
-    if (accel > 0) {
-      SpeedInfo_t current = SPEED_INFO[accel];
-      if (accelCount >= current.tick) {
-        if (base_speed < current.max) {
-          if (base_speed + current.accel >= current.max) {
-            base_speed = current.max;
-          } else {
-            base_speed += current.accel;
-          }
-          
-        } else if (base_speed > current.max) {
-          if (base_speed - current.accel <= current.max) {
-            base_speed = current.max;
-          } else {
-            base_speed -= current.accel;
-          }
+      PowerNotchInfo_t current = POWER_NOTCH[index];
+      if (tick_count % current.period == 0) {  // 周期に応じて加速
+        int8_t speed_diff = current.max_speed - current_speed;
+        if (speed_diff > 0) {
+          int8_t accel = (current.base_accel * speed_diff) / current.max_speed;
+          if (accel < 1) accel = 1;
+          current_speed += accel;
+        } else if (speed_diff < 0) {
+          int8_t decel = (current.base_accel * (-speed_diff)) / current_speed;
+          if (decel < 1) decel = 1;
+          current_speed -= decel;
         }
-        accelCount = 0;
-      }
-    } else {
-      accelCount = 0;
-    }
-
-    base_speed -= brakeSize;
-
-    if (decelSize > 0)
-    {
-
-      if (decelCount >= (21 - decelSize))
-      {
-        decelCount = 0;
-        base_speed -= 1;
       }
     }
+    // ブレーキ制御
+    else if (handle_state < Center) {
+      int index = 0;
+      if (handle_state == Brake1) index = 0;
+      else if (handle_state == Brake2) index = 1;
+      else if (handle_state == Brake3) index = 2;
+      else if (handle_state == Brake4) index = 3;
+      else if (handle_state == Brake5) index = 4;
+      else if (handle_state == Brake6) index = 5;
+      else if (handle_state == Brake7) index = 6;
+      else if (handle_state == Brake8) index = 7;
+      else continue;
 
-    display.setSpeed(base_speed, true);
-    train_controller.setSpeed(base_speed);
+      BrakeNotchInfo_t current = BRAKE_NOTCH[index];
+      if (tick_count % current.period == 0) {
+        current_speed -= current.decel;
+      }
+    }
+
+    // 環境抵抗の処理
+    if (decelSize > 0 && handle_state == Center) {
+      EnvironmentResistance_t current = ENV_RESISTANCE[decelSize];
+      if (tick_count % current.period == 0) {
+        current_speed -= current.decel;
+      }
+    }
+
+    // 速度の下限チェック
+    if (current_speed < 0) current_speed = 0;
+
+    // ティックカウンタの更新
+    tick_count++;
+
+    display.setSpeed(current_speed, true);
+    train_controller.setSpeed(current_speed);
   }
 }
 
@@ -270,7 +274,7 @@ void setup()
   train_controller.begin();
 
   queueSpeedControl = xQueueCreate(10, 10 / portTICK_RATE_MS);
-  timerUpdateSpeed = xTimerCreate("timer decel", TICK_PERIOD_DECEL, pdTRUE, NULL, onTickUpdateSpeed);
+  timerUpdateSpeed = xTimerCreate("timer decel", TICK_PERIOD_UPDATE_SPEED, pdTRUE, NULL, onTickUpdateSpeed);
   xTaskCreate(taskSpeedControlProc, "speed control task", 4096, NULL, 1, NULL);
 
   xTimerStart(timerUpdateSpeed, 10 / portTICK_RATE_MS);
